@@ -737,7 +737,7 @@ trait Types extends api.Types { self: Forest =>
    */
   class TypeVar(
       val origin: Type,
-      val constr0: TypeConstraint,
+      val constr: TypeConstraint,
       override val typeArgs: List[Type],
       override val params: List[Symbol]
   ) extends Type {
@@ -748,9 +748,6 @@ trait Types extends api.Types { self: Forest =>
       case NoType => "?" + levelString + origin + this.toString
       case x      => "" + x
     }
-
-    /** The constraint associated with the variable */
-    var constr = constr0
 
     /**
      * Two occurrences of a higher-kinded typevar, e.g. `?CC[Int]` and
