@@ -98,9 +98,6 @@ trait Definitions extends api.StandardDefinitions { self: Forest =>
   }
 
   object definitions extends AbsDefinitions with ValueClassDefinitions {
-    private var isInitialized    = false
-    def isDefinitionsInitialized = isInitialized
-
     // This is the actual root of everything, including the package _root_.
     lazy val RootClass: ModuleClassSymbol = (
       NoSymbol.newModuleClass(NoPosition, tpnme.ROOT)
@@ -727,8 +724,6 @@ trait Definitions extends api.StandardDefinitions { self: Forest =>
     // lazy val SetterTargetClass          = getMetaAnnotation("setter")
 
     def init(): Unit = {
-      if (isInitialized) return
-
       // members of class scala.Any
       Any_== = newMethod(AnyClass, nme.EQ, anyparam, booltype) setFlag FINAL
       Any_!= = newMethod(AnyClass, nme.NE, anyparam, booltype) setFlag FINAL

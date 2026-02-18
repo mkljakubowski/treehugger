@@ -469,7 +469,6 @@ trait Types extends api.Types { self: Forest =>
    *   ...
    */
   abstract class TypeRef(val pre: Type, val sym: Symbol, val args: List[Type]) extends Type {
-    private var normalized: Type      = null
     override def prefix: Type         = pre
     override def typeArgs: List[Type] = args
 
@@ -489,7 +488,7 @@ trait Types extends api.Types { self: Forest =>
     // existential types.
     override def isHigherKinded = args.isEmpty && typeParamsDirect.nonEmpty
 
-    private def normalize0: Type = (
+    lazy val normalized: Type =
       if (pre eq WildcardType)
         WildcardType // arises when argument-dependent types are approximated (see def depoly in implicits)
       // else if (isHigherKinded) etaExpand   // eta-expand, subtyping relies on eta-expansion of higher-kinded types
@@ -497,15 +496,6 @@ trait Types extends api.Types { self: Forest =>
       // else if (sym.isRefinementClass) sym.info.normalize // I think this is okay, but see #1241 (r12414), #2208, and typedTypeConstructor in Typers
       // else if (sym.isAliasType) ErrorType //println("!!error: "+(pre, sym, sym.info, sym.info.typeParams, args))
       else super.normalize
-    )
-
-    // TODO: test case that is compiled  in a specific order and in different runs
-    override def normalize: Type = {
-      if (normalized == null) {
-        normalized = normalize0
-      }
-      normalized
-    }
 
     private def preString = (
       // ensure that symbol is not a local copy with a name coincidence
