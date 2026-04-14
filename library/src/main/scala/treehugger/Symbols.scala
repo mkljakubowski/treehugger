@@ -3,10 +3,12 @@ package treehugger
 import Flags._
 import api.Modifier
 
+import java.util.concurrent.atomic.AtomicInteger
+
 trait Symbols extends api.Symbols { self: Forest =>
   import definitions._
 
-  private var ids = 0
+  private val ids = new AtomicInteger(0)
 
   abstract class Symbol(initOwner: Symbol, initPos: Position, initName: Name)
       extends AbsSymbol
@@ -20,7 +22,7 @@ trait Symbols extends api.Symbols { self: Forest =>
     var rawname: Name    = initName
     var rawpos           = initPos
     var rawflags         = 0L
-    val id               = { ids += 1; ids } // identity displayed when -uniqid
+    val id               = ids.getAndIncrement()
 
     def pos = rawpos
 

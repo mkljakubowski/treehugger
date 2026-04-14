@@ -671,11 +671,11 @@ trait Types extends api.Types { self: Forest =>
               return TypeRef(pre, sym, List()).toString + wargs.mkString("[", ", ", "]")
           case _ =>
         }
-      val ustr =        underlying match {
-          case MethodType(_, _) | NullaryMethodType(_) | PolyType(_, _) =>
-            "(" + underlying.toString + ")"
-          case _ => underlying.toString
-        }
+      val ustr = underlying match {
+        case MethodType(_, _) | NullaryMethodType(_) | PolyType(_, _) =>
+          "(" + underlying.toString + ")"
+        case _ => underlying.toString
+      }
       ustr + (quantified map (treeToString(_)) mkString (
         " forSome { ",
         "; ",

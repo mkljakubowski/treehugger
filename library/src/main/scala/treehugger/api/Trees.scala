@@ -12,8 +12,6 @@ import scala.collection.mutable.ListBuffer
 
 trait Trees { self: Universe =>
 
-  private[treehugger] var nodeCount = 0
-
   type Modifiers <: AbsModifiers
   type AnnotationType
 
@@ -76,8 +74,6 @@ trait Trees { self: Universe =>
    * eliminated during parsing.
    */
   abstract class Tree extends Product {
-    val id = nodeCount
-    nodeCount += 1
 
     private[this] var rawpos: Position = NoPosition
 
