@@ -27,14 +27,14 @@ trait Types extends api.Types { self: Forest =>
      * a string on each level.
      */
     override def toString: String =
-      if (tostringRecursions >= maxTostringRecursions)
+      if (tostringRecursions.get() >= maxTostringRecursions)
         "..."
       else
         try {
-          tostringRecursions += 1
+          tostringRecursions.set(tostringRecursions.get() + 1)
           safeToString
         } finally {
-          tostringRecursions -= 1
+          tostringRecursions.set(tostringRecursions.get() - 1)
         }
 
     /**
@@ -997,5 +997,5 @@ trait Types extends api.Types { self: Forest =>
    */
   final val maxTostringRecursions = 50
 
-  private var tostringRecursions = 0
+  private val tostringRecursions = new ThreadLocal[Int] { override def initialValue() = 0 }
 }

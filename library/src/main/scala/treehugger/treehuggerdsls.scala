@@ -352,7 +352,7 @@ trait TreehuggerDSLs { self: Forest =>
           _mods = defaultMods
 
         _mods = _mods | Flags.PRIVATE
-        _mods = Modifiers(_mods.flags, pin.name, _mods.annotations)
+        _mods = Modifiers(_mods.flags, pin.name, _mods.annotations, Map())
         this
       }
       def withAnnots(annot: AnnotationInfo*): this.type = withAnnots(
@@ -364,7 +364,8 @@ trait TreehuggerDSLs { self: Forest =>
         _mods = Modifiers(
           _mods.flags,
           _mods.privateWithin,
-          _mods.annotations ::: annot.toList
+          _mods.annotations ::: annot.toList,
+          Map()
         )
         this
       }
@@ -645,7 +646,7 @@ trait TreehuggerDSLs { self: Forest =>
       }
       def withCtorFlags(pin: PRIVATEWITHIN): this.type = {
         _ctormods = _ctormods | Flags.PRIVATE
-        _ctormods = Modifiers(_ctormods.flags, pin.name, _ctormods.annotations)
+        _ctormods = Modifiers(_ctormods.flags, pin.name, _ctormods.annotations, Map())
         this
       }
 

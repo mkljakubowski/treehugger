@@ -22,13 +22,13 @@ trait Trees extends api.Trees { self: Forest =>
   case class Modifiers(
       flags: Long,
       privateWithin: Name,
-      annotations: List[AnnotationInfo]
+      annotations: List[AnnotationInfo],
+      positions: Map[Long, Position]
   ) extends AbsModifiers
       with HasFlags {
-    var positions: Map[Long, Position] = Map()
 
-    def setPositions(poss: Map[Long, Position]): this.type = {
-      positions = poss; this
+    def setPositions(poss: Map[Long, Position]): Modifiers = {
+      copy(positions = poss)
     }
 
     /* Abstract types from HasFlags. */
@@ -47,17 +47,17 @@ trait Trees extends api.Trees { self: Forest =>
     def &(flag: Long): Modifiers = {
       val flags1 = flags & flag
       if (flags1 == flags) this
-      else Modifiers(flags1, privateWithin, annotations) setPositions positions
+      else Modifiers(flags1, privateWithin, annotations, Map()) setPositions positions
     }
     def &~(flag: Long): Modifiers = {
       val flags1 = flags & (~flag)
       if (flags1 == flags) this
-      else Modifiers(flags1, privateWithin, annotations) setPositions positions
+      else Modifiers(flags1, privateWithin, annotations, Map()) setPositions positions
     }
     def |(flag: Long): Modifiers = {
       val flags1 = flags | flag
       if (flags1 == flags) this
-      else Modifiers(flags1, privateWithin, annotations) setPositions positions
+      else Modifiers(flags1, privateWithin, annotations, Map()) setPositions positions
     }
 
     override def hasModifier(mod: Modifier.Value) =
@@ -67,7 +67,7 @@ trait Trees extends api.Trees { self: Forest =>
     override def mapAnnotations(
         f: List[AnnotationInfo] => List[AnnotationInfo]
     ): Modifiers =
-      Modifiers(flags, privateWithin, f(annotations)) setPositions positions
+      Modifiers(flags, privateWithin, f(annotations), Map()) setPositions positions
 
     override def toString = "Modifiers(%s, %s, %s)".format(
       defaultFlagString,
@@ -77,7 +77,7 @@ trait Trees extends api.Trees { self: Forest =>
   }
 
   def Modifiers(flags: Long, privateWithin: Name): Modifiers =
-    Modifiers(flags, privateWithin, List())
+    Modifiers(flags, privateWithin, List(), Map())
   def Modifiers(flags: Long): Modifiers = Modifiers(flags, tpnme.EMPTY)
 
   def Modifiers(
@@ -86,7 +86,7 @@ trait Trees extends api.Trees { self: Forest =>
       annotations: List[AnnotationInfo]
   ): Modifiers = {
     val flagSet = mods map flagOfModifier
-    Modifiers((0L /: flagSet)(_ | _), privateWithin, annotations)
+    Modifiers((0L /: flagSet)(_ | _), privateWithin, annotations, Map())
   }
 
   lazy val NoMods = Modifiers(0)

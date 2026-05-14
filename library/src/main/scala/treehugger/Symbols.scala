@@ -10,19 +10,21 @@ trait Symbols extends api.Symbols { self: Forest =>
 
   private val ids = new AtomicInteger(0)
 
-  abstract class Symbol(initOwner: Symbol, initPos: Position, initName: Name)
-      extends AbsSymbol
+  abstract class Symbol(
+      val rawowner: Symbol,
+      val rawpos: Position,
+      val rawname: Name,
+      val rawflags: Long,
+      val privateWithin: Symbol,
+      val annotations: List[AnnotationInfo]
+  ) extends AbsSymbol
       with HasFlags {
 
     type FlagsType          = Long
     type AccessBoundaryType = Symbol
     type AnnotationType     = AnnotationInfo
 
-    var rawowner: Symbol = initOwner
-    var rawname: Name    = initName
-    var rawpos           = initPos
-    var rawflags         = 0L
-    val id               = ids.getAndIncrement()
+    val id = ids.getAndIncrement()
 
     def pos = rawpos
 
@@ -33,6 +35,12 @@ trait Symbols extends api.Symbols { self: Forest =>
 
     override def allModifiers: Set[Modifier.Value] =
       Modifier.values filter hasModifier
+
+// ------ copy primitives (overridden in each concrete class) ----------------------
+
+    protected def withRawflags(f: Long): Symbol
+    protected def withPrivateWithin(pw: Symbol): Symbol
+    protected def copyAnnotations(a: List[AnnotationInfo]): Symbol
 
 // ------ creators -------------------------------------------------------------------
 
@@ -73,15 +81,15 @@ trait Symbols extends api.Symbols { self: Forest =>
         m: ModuleSymbol,
         clazz: ClassSymbol
     ): ModuleSymbol = {
-      // Top-level objects can be automatically marked final, but others
-      // must be explicitly marked final if overridable objects are enabled.
-      val flags = if (isPackage) MODULE | FINAL else MODULE
-      m setFlag flags
-      m setModuleClass clazz
-      m
+      val extraFlags = if (isPackage) MODULE | FINAL else MODULE
+      m.copy(rawflags = m.rawflags | extraFlags, referenced = clazz)
     }
-    private def finishModule(m: ModuleSymbol): ModuleSymbol =
-      finishModule(m, new ModuleClassSymbol(m))
+
+    private def finishModule(m: ModuleSymbol): ModuleSymbol = {
+      val extraFlags = if (isPackage) MODULE | FINAL else MODULE
+      val mWithFlags = m.copy(rawflags = m.rawflags | extraFlags)
+      mWithFlags.copy(referenced = new ModuleClassSymbol(mWithFlags))
+    }
 
     final def newModule(
         pos: Position,
@@ -104,17 +112,20 @@ trait Symbols extends api.Symbols { self: Forest =>
       finishModule(new ModuleSymbol(this, NoPosition, name))
 
     final def newPackage(pos: Position, name: TermName): ModuleSymbol = {
-      val m = newModule(pos, name).setFlag(JAVA | PACKAGE)
-      m.moduleClass setFlag (JAVA | PACKAGE)
-      m
+      val extraFlags  = if (isPackage) MODULE | FINAL else MODULE
+      val moduleFlags = extraFlags | JAVA | PACKAGE
+      val m           = new ModuleSymbol(this, pos, name, moduleFlags)
+      val classFlags  = m.getFlag(ModuleToClassFlags) | MODULE | JAVA | PACKAGE
+      val clazz       = new ModuleClassSymbol(this, pos, name.toTypeName, classFlags)
+      m.copy(referenced = clazz)
     }
     final def newPackage(
         name: TermName,
         pos: Position = NoPosition
     ): ModuleSymbol =
       newPackage(pos, name)
-    final def newModuleClass(pos: Position, name: Name) =
-      new ModuleClassSymbol(this, pos, name.toTypeName)
+    final def newModuleClass(pos: Position, name: Name, flags: Long = 0L) =
+      new ModuleClassSymbol(this, pos, name.toTypeName, flags)
     final def newModuleClass(name: Name, pos: Position = NoPosition) =
       new ModuleClassSymbol(this, pos, name.toTypeName)
 
@@ -259,8 +270,7 @@ trait Symbols extends api.Symbols { self: Forest =>
 
     final def isVariable = isTerm && isMutable && !isMethod
 
-    final def isValueParameter = isTerm && hasFlag(PARAM)
-    // final def isLocalDummy = isTerm && nme.isLocalDummyName(name)
+    final def isValueParameter       = isTerm && hasFlag(PARAM)
     final def isInitializedToDefault =
       !isType && hasAllFlags(DEFAULTINIT | ACCESSOR)
     final def isClassConstructor = isTerm && (name == nme.CONSTRUCTOR)
@@ -304,9 +314,8 @@ trait Symbols extends api.Symbols { self: Forest =>
     )
 
     def isEmptyPrefix = (
-      isEffectiveRoot              // has no prefix for real, <empty> or <root>
-        || isAnonOrRefinementClass // has uninteresting <anon> or <refinement> prefix
-        // || nme.isReplWrapperName(name)          // has ugly $iw. prefix (doesn't call isInterpreterWrapper due to nesting)
+      isEffectiveRoot
+        || isAnonOrRefinementClass
     )
 
     /**
@@ -424,17 +433,10 @@ trait Symbols extends api.Symbols { self: Forest =>
       val fs = rawflags
       (fs | ((fs & LateFlags) >>> LateShift)) & ~(fs >>> AntiShift)
     }
-    final def flags_=(fs: Long)              = rawflags = fs
-    final def setFlag(mask: Long): this.type = {
-      rawflags = rawflags | mask; this
-    }
-    final def resetFlag(mask: Long): this.type = {
-      rawflags = rawflags & ~mask; this
-    }
-    final def getFlag(mask: Long): Long = flags & mask
-    final def resetFlags(): Unit        = {
-      rawflags = rawflags & TopLevelCreationFlags
-    }
+    final def setFlag(mask: Long): Symbol   = withRawflags(rawflags | mask)
+    final def resetFlag(mask: Long): Symbol = withRawflags(rawflags & ~mask)
+    final def getFlag(mask: Long): Long     = flags & mask
+    final def resetFlags(): Symbol          = withRawflags(rawflags & TopLevelCreationFlags)
 
     /** Does symbol have ANY flag in `mask` set? */
     final def hasFlag(mask: Long): Boolean = (flags & mask) != 0L
@@ -447,13 +449,15 @@ trait Symbols extends api.Symbols { self: Forest =>
      * notFLAG. For instance if flag is PRIVATE, the notPRIVATE flag will be
      * set if PRIVATE is currently set.
      */
-    final def setNotFlag(flag: Int) = if (hasFlag(flag))
-      setFlag((flag: @annotation.switch) match {
-        case PRIVATE   => notPRIVATE
-        case PROTECTED => notPROTECTED
-        case OVERRIDE  => notOVERRIDE
-        case _         => sys.error("setNotFlag on invalid flag: " + flag)
-      })
+    final def setNotFlag(flag: Int): Symbol =
+      if (hasFlag(flag))
+        setFlag((flag: @annotation.switch) match {
+          case PRIVATE   => notPRIVATE
+          case PROTECTED => notPROTECTED
+          case OVERRIDE  => notOVERRIDE
+          case _         => sys.error("setNotFlag on invalid flag: " + flag)
+        })
+      else this
 
     /**
      * The class or term up to which this symbol is accessible, or RootClass if
@@ -468,35 +472,16 @@ trait Symbols extends api.Symbols { self: Forest =>
       else RootClass
     }
 
-    // def isLessAccessibleThan(other: Symbol): Boolean = {
-    //   val tb = this.accessBoundary(owner)
-    //   val ob1 = other.accessBoundary(owner)
-    //   val ob2 = ob1.linkedClassOfClass
-    //   var o = tb
-    //   while (o != NoSymbol && o != ob1 && o != ob2) {
-    //     o = o.owner
-    //   }
-    //   o != NoSymbol && o != tb
-    // }
-
     /**
      * See comment in HasFlags for how privateWithin combines with flags.
      */
-    private[this] var _privateWithin: Symbol     = _
-    def privateWithin                            = _privateWithin
-    def privateWithin_=(sym: Symbol): Unit       = { _privateWithin = sym }
-    def setPrivateWithin(sym: Symbol): this.type = {
-      privateWithin_=(sym); this
-    }
+    final def setPrivateWithin(sym: Symbol): Symbol = withPrivateWithin(sym)
 
     /** Does symbol have a private or protected qualifier set? */
     final def hasAccessBoundary =
       (privateWithin != null) && (privateWithin != NoSymbol)
 
 // ----- annotations ------------------------------------------------------------
-
-    // null is a marker that they still need to be obtained.
-    private var _annotations: List[AnnotationInfo] = Nil
 
     def annotationsString =
       if (annotations.isEmpty) "" else annotations.mkString("(", ", ", ")")
@@ -506,33 +491,28 @@ trait Symbols extends api.Symbols { self: Forest =>
      * contains the annotations attached to member a definition (class, method,
      * type, field).
      */
-    def annotations: List[AnnotationInfo]                       = _annotations
-    def setAnnotations(annots: List[AnnotationInfo]): this.type = {
-      _annotations = annots
-      this
-    }
+    final def setAnnotations(annots: List[AnnotationInfo]): Symbol =
+      copyAnnotations(annots)
 
-    def withAnnotations(annots: List[AnnotationInfo]): this.type =
-      setAnnotations(annots ::: annotations)
+    final def withAnnotations(annots: List[AnnotationInfo]): Symbol =
+      copyAnnotations(annots ::: annotations)
 
-    def withoutAnnotations: this.type =
-      setAnnotations(Nil)
+    final def withoutAnnotations: Symbol = copyAnnotations(Nil)
 
-    def filterAnnotations(p: AnnotationInfo => Boolean): this.type =
-      setAnnotations(annotations filter p)
+    final def filterAnnotations(p: AnnotationInfo => Boolean): Symbol =
+      copyAnnotations(annotations filter p)
 
-    def addAnnotation(annot: AnnotationInfo): this.type =
-      setAnnotations(annot :: annotations)
+    final def addAnnotation(annot: AnnotationInfo): Symbol =
+      copyAnnotations(annot :: annotations)
 
-    // Convenience for the overwhelmingly common case
-    def addAnnotation(sym: Symbol, args: Tree*): this.type =
-      addAnnotation(AnnotationInfo(sym.tpe, args.toList, Nil))
+    final def addAnnotation(sym: Symbol, args: Tree*): Symbol =
+      copyAnnotations(AnnotationInfo(sym.tpe, args.toList, Nil) :: annotations)
 
 // ------ comparisons ----------------------------------------------------------------
 
     /** Is this class symbol a subclass of that symbol? */
     final def isNonBottomSubClass(that: Symbol): Boolean = (
-      (this eq that) || this.isError || that.isError // || info.baseTypeIndex(that) >= 0
+      (this eq that) || this.isError || that.isError
     )
 
     /**
@@ -579,7 +559,7 @@ trait Symbols extends api.Symbols { self: Forest =>
     override def toString = nameString
 
     def signatureString =
-      "<_>" // if (hasRawInfo) infoString(rawInfo) else "<_>"
+      "<_>"
 
     def hasFlagsToString(mask: Long): String = flagsToString(
       flags & mask,
@@ -615,41 +595,149 @@ trait Symbols extends api.Symbols { self: Forest =>
     private def compose(ss: String*) = ss filter (_ != "") mkString " "
 
     def isSingletonExistential = false
-    // nme.isSingletonName(name) && (info.bounds.hi.typeSymbol isSubClass SingletonClass)
 
     /** String representation of existentially bound variable */
     def existentialToString = defString
   }
 
+// ------ TermSymbol ---------------------------------------------------------------
+
   /** A class for term symbols */
-  class TermSymbol(initOwner: Symbol, initPos: Position, initName: TermName)
-      extends Symbol(initOwner, initPos, initName) {
+  class TermSymbol(
+      initOwner: Symbol,
+      initPos: Position,
+      initName: TermName,
+      initFlags: Long = 0L,
+      initPrivateWithin: Symbol = null,
+      initAnnotations: List[AnnotationInfo] = Nil,
+      val referenced: Symbol = NoSymbol
+  ) extends Symbol(initOwner, initPos, initName, initFlags, initPrivateWithin, initAnnotations) {
+
     final override def isTerm = true
 
-    override def name: TermName = super.name
+    override def name: TermName = super.name.asInstanceOf[TermName]
 
-    private var referenced: Symbol   = NoSymbol
+    def copy(
+        rawowner: Symbol = this.rawowner,
+        rawpos: Position = this.rawpos,
+        rawname: TermName = this.name,
+        rawflags: Long = this.rawflags,
+        privateWithin: Symbol = this.privateWithin,
+        annotations: List[AnnotationInfo] = this.annotations,
+        referenced: Symbol = this.referenced
+    ): TermSymbol =
+      new TermSymbol(rawowner, rawpos, rawname, rawflags, privateWithin, annotations, referenced)
+
+    override protected def withRawflags(f: Long): TermSymbol =
+      copy(rawflags = f)
+    override protected def withPrivateWithin(pw: Symbol): TermSymbol =
+      copy(privateWithin = pw)
+    override protected def copyAnnotations(a: List[AnnotationInfo]): TermSymbol =
+      copy(annotations = a)
+
     override def moduleClass: Symbol =
       if (hasFlag(MODULE)) referenced
       else NoSymbol
+
     def setModuleClass(clazz: Symbol): TermSymbol = {
       assert(hasFlag(MODULE))
-      referenced = clazz
-      this
+      copy(referenced = clazz)
     }
   }
 
+// ------ ModuleSymbol -------------------------------------------------------------
+
   /** A class for module symbols */
-  class ModuleSymbol(initOwner: Symbol, initPos: Position, initName: TermName)
-      extends TermSymbol(initOwner, initPos, initName) {}
+  class ModuleSymbol(
+      initOwner: Symbol,
+      initPos: Position,
+      initName: TermName,
+      initFlags: Long = 0L,
+      initPrivateWithin: Symbol = null,
+      initAnnotations: List[AnnotationInfo] = Nil,
+      initReferenced: Symbol = NoSymbol
+  ) extends TermSymbol(
+        initOwner,
+        initPos,
+        initName,
+        initFlags,
+        initPrivateWithin,
+        initAnnotations,
+        initReferenced
+      ) {
+
+    override def copy(
+        rawowner: Symbol = this.rawowner,
+        rawpos: Position = this.rawpos,
+        rawname: TermName = this.name,
+        rawflags: Long = this.rawflags,
+        privateWithin: Symbol = this.privateWithin,
+        annotations: List[AnnotationInfo] = this.annotations,
+        referenced: Symbol = this.referenced
+    ): ModuleSymbol =
+      new ModuleSymbol(rawowner, rawpos, rawname, rawflags, privateWithin, annotations, referenced)
+
+    override protected def withRawflags(f: Long): ModuleSymbol =
+      copy(rawflags = f)
+    override protected def withPrivateWithin(pw: Symbol): ModuleSymbol =
+      copy(privateWithin = pw)
+    override protected def copyAnnotations(a: List[AnnotationInfo]): ModuleSymbol =
+      copy(annotations = a)
+
+    override def setModuleClass(clazz: Symbol): ModuleSymbol = {
+      assert(hasFlag(MODULE))
+      copy(referenced = clazz)
+    }
+  }
+
+// ------ MethodSymbol -------------------------------------------------------------
 
   /** A class for method symbols */
-  class MethodSymbol(initOwner: Symbol, initPos: Position, initName: TermName)
-      extends TermSymbol(initOwner, initPos, initName) {}
+  class MethodSymbol(
+      initOwner: Symbol,
+      initPos: Position,
+      initName: TermName,
+      initFlags: Long = 0L,
+      initPrivateWithin: Symbol = null,
+      initAnnotations: List[AnnotationInfo] = Nil
+  ) extends TermSymbol(
+        initOwner,
+        initPos,
+        initName,
+        initFlags,
+        initPrivateWithin,
+        initAnnotations
+      ) {
 
-  class TypeSymbol(initOwner: Symbol, initPos: Position, initName: TypeName)
-      extends Symbol(initOwner, initPos, initName) {
-    private var tyconCache: Type = null
+    override def copy(
+        rawowner: Symbol = this.rawowner,
+        rawpos: Position = this.rawpos,
+        rawname: TermName = this.name,
+        rawflags: Long = this.rawflags,
+        privateWithin: Symbol = this.privateWithin,
+        annotations: List[AnnotationInfo] = this.annotations,
+        referenced: Symbol = this.referenced
+    ): MethodSymbol =
+      new MethodSymbol(rawowner, rawpos, rawname, rawflags, privateWithin, annotations)
+
+    override protected def withRawflags(f: Long): MethodSymbol =
+      copy(rawflags = f)
+    override protected def withPrivateWithin(pw: Symbol): MethodSymbol =
+      copy(privateWithin = pw)
+    override protected def copyAnnotations(a: List[AnnotationInfo]): MethodSymbol =
+      copy(annotations = a)
+  }
+
+// ------ TypeSymbol ---------------------------------------------------------------
+
+  class TypeSymbol(
+      initOwner: Symbol,
+      initPos: Position,
+      initName: TypeName,
+      initFlags: Long = 0L,
+      initPrivateWithin: Symbol = null,
+      initAnnotations: List[AnnotationInfo] = Nil
+  ) extends Symbol(initOwner, initPos, initName, initFlags, initPrivateWithin, initAnnotations) {
 
     override def name: TypeName = super.name.asInstanceOf[TypeName]
     final override def isType   = true
@@ -660,50 +748,128 @@ trait Symbols extends api.Symbols { self: Forest =>
       typeRef(pre, this, targs)
     }
 
-    override def typeConstructor: Type = {
-      if (tyconCache eq null) {
-        tyconCache = newTypeRef(Nil)
-      }
-      tyconCache
-    }
+    override lazy val typeConstructor: Type = newTypeRef(Nil)
 
-    override def tpeHK = typeConstructor // used in memberType
+    override def tpeHK = typeConstructor
+
+    def copy(
+        rawowner: Symbol = this.rawowner,
+        rawpos: Position = this.rawpos,
+        rawname: TypeName = this.name,
+        rawflags: Long = this.rawflags,
+        privateWithin: Symbol = this.privateWithin,
+        annotations: List[AnnotationInfo] = this.annotations
+    ): TypeSymbol =
+      new TypeSymbol(rawowner, rawpos, rawname, rawflags, privateWithin, annotations)
+
+    override protected def withRawflags(f: Long): TypeSymbol =
+      copy(rawflags = f)
+    override protected def withPrivateWithin(pw: Symbol): TypeSymbol =
+      copy(privateWithin = pw)
+    override protected def copyAnnotations(a: List[AnnotationInfo]): TypeSymbol =
+      copy(annotations = a)
   }
 
+// ------ ClassSymbol --------------------------------------------------------------
+
   /** A class for class symbols */
-  class ClassSymbol(initOwner: Symbol, initPos: Position, initName: TypeName)
-      extends TypeSymbol(initOwner, initPos, initName) {
+  class ClassSymbol(
+      initOwner: Symbol,
+      initPos: Position,
+      initName: TypeName,
+      initFlags: Long = 0L,
+      initPrivateWithin: Symbol = null,
+      initAnnotations: List[AnnotationInfo] = Nil
+  ) extends TypeSymbol(
+        initOwner,
+        initPos,
+        initName,
+        initFlags,
+        initPrivateWithin,
+        initAnnotations
+      ) {
+
     final override def isClass        = true
     final override def isNonClassType = false
     final override def isAbstractType = false
     final override def isAliasType    = false
 
-    private var thisTypeCache: Type = null
-
     /** the type this.type in this class */
-    override def thisType: Type = {
-      if (thisTypeCache eq null) {
-        thisTypeCache = ThisType(this)
-      }
+    override lazy val thisType: Type = ThisType(this)
 
-      thisTypeCache
-    }
+    override lazy val module = new ModuleSymbol(rawowner, rawpos, rawname.toTermName)
 
-    override lazy val module = new ModuleSymbol(initOwner, initPos, initName)
+    override def copy(
+        rawowner: Symbol = this.rawowner,
+        rawpos: Position = this.rawpos,
+        rawname: TypeName = this.name,
+        rawflags: Long = this.rawflags,
+        privateWithin: Symbol = this.privateWithin,
+        annotations: List[AnnotationInfo] = this.annotations
+    ): ClassSymbol =
+      new ClassSymbol(rawowner, rawpos, rawname, rawflags, privateWithin, annotations)
+
+    override protected def withRawflags(f: Long): ClassSymbol =
+      copy(rawflags = f)
+    override protected def withPrivateWithin(pw: Symbol): ClassSymbol =
+      copy(privateWithin = pw)
+    override protected def copyAnnotations(a: List[AnnotationInfo]): ClassSymbol =
+      copy(annotations = a)
   }
+
+// ------ ModuleClassSymbol --------------------------------------------------------
 
   /**
    * A class for module class symbols Note: Not all module classes are of this
    * type; when unpickled, we get plain class symbols!
    */
-  class ModuleClassSymbol(owner: Symbol, pos: Position, name: TypeName)
-      extends ClassSymbol(owner, pos, name) {
-    def this(module: TermSymbol) = {
-      this(module.owner, module.pos, module.name.toTypeName)
-      setFlag(module.getFlag(ModuleToClassFlags) | MODULE)
-      // sourceModule = module
-    }
+  class ModuleClassSymbol(
+      initOwner: Symbol,
+      initPos: Position,
+      initName: TypeName,
+      initFlags: Long = 0L,
+      initPrivateWithin: Symbol = null,
+      initAnnotations: List[AnnotationInfo] = Nil
+  ) extends ClassSymbol(
+        initOwner,
+        initPos,
+        initName,
+        initFlags,
+        initPrivateWithin,
+        initAnnotations
+      ) {
+
+    def this(module: TermSymbol) =
+      this(
+        module.rawowner,
+        module.rawpos,
+        module.name.toTypeName,
+        module.getFlag(ModuleToClassFlags) | MODULE
+      )
+
+    override def copy(
+        rawowner: Symbol = this.rawowner,
+        rawpos: Position = this.rawpos,
+        rawname: TypeName = this.name,
+        rawflags: Long = this.rawflags,
+        privateWithin: Symbol = this.privateWithin,
+        annotations: List[AnnotationInfo] = this.annotations
+    ): ModuleClassSymbol =
+      new ModuleClassSymbol(rawowner, rawpos, rawname, rawflags, privateWithin, annotations)
+
+    override protected def withRawflags(f: Long): ModuleClassSymbol =
+      copy(rawflags = f)
+    override protected def withPrivateWithin(pw: Symbol): ModuleClassSymbol =
+      copy(privateWithin = pw)
+    override protected def copyAnnotations(a: List[AnnotationInfo]): ModuleClassSymbol =
+      copy(annotations = a)
   }
 
-  object NoSymbol extends Symbol(null, NoPosition, nme.NO_NAME) {}
+// ------ NoSymbol -----------------------------------------------------------------
+
+  object NoSymbol extends Symbol(null, NoPosition, nme.NO_NAME, 0L, null, Nil) {
+    override protected def withRawflags(f: Long): Symbol                    = this
+    override protected def withPrivateWithin(pw: Symbol): Symbol            = this
+    override protected def copyAnnotations(a: List[AnnotationInfo]): Symbol = this
+  }
 }

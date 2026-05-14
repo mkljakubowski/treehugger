@@ -99,10 +99,8 @@ trait Definitions extends api.StandardDefinitions { self: Forest =>
 
   object definitions extends AbsDefinitions with ValueClassDefinitions {
     // This is the actual root of everything, including the package _root_.
-    lazy val RootClass: ModuleClassSymbol = (
-      NoSymbol.newModuleClass(NoPosition, tpnme.ROOT)
-        setFlag (FINAL | MODULE | PACKAGE | JAVA)
-    )
+    lazy val RootClass: ModuleClassSymbol =
+      NoSymbol.newModuleClass(NoPosition, tpnme.ROOT, FINAL | MODULE | PACKAGE | JAVA)
     // The empty package, which holds all top level types without given packages.
     lazy val EmptyPackage =
       RootClass.newPackage(NoPosition, nme.EMPTY_PACKAGE_NAME).setFlag(FINAL)
@@ -144,8 +142,7 @@ trait Definitions extends api.StandardDefinitions { self: Forest =>
     lazy val RuntimeNullClass    = getClass(SCALA_NULL)
 
     sealed abstract class BottomClassSymbol(name: TypeName, parent: Symbol)
-        extends ClassSymbol(ScalaPackageClass, NoPosition, name) {
-      this setFlag ABSTRACT | TRAIT | FINAL
+        extends ClassSymbol(ScalaPackageClass, NoPosition, name, ABSTRACT | TRAIT | FINAL) {
       // final override def isBottomClass = true
     }
     final object NothingClass extends BottomClassSymbol(tpnme.Nothing, AnyClass) {
