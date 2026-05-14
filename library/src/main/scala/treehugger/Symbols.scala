@@ -124,7 +124,7 @@ trait Symbols extends api.Symbols { self: Forest =>
         pos: Position = NoPosition
     ): ModuleSymbol =
       newPackage(pos, name)
-    final def newModuleClass(pos: Position, name: Name, flags: Long = 0L) =
+    final def newModuleClass(pos: Position, name: Name, flags: Long) =
       new ModuleClassSymbol(this, pos, name.toTypeName, flags)
     final def newModuleClass(name: Name, pos: Position = NoPosition) =
       new ModuleClassSymbol(this, pos, name.toTypeName)
